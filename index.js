@@ -6,6 +6,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
 const port = process.env.PORT || 3000;
 const app = express();
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const corsOptions = {
   origin: [
@@ -38,7 +39,9 @@ const verifyToken = (req, res, next) => {
     jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
       if (err) {
         console.log("token ERROR");
-        return res.status(401).send({ message: "Token authentication error", error: err.message });
+        return res
+          .status(401)
+          .send({ message: "Token authentication error", error: err.message });
       }
       req.user = decoded;
       next();
@@ -59,8 +62,8 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    const userCollection = client.db("libraryDB").collection("users");
-    const bookCollection = client.db("libraryDB").collection("book");
+    const assetsCollection = client.db("assetMartDB").collection("assets");
+    const userCollection = client.db("assetMartDB").collection("users");
 
     // jwt generate
 
@@ -95,550 +98,150 @@ async function run() {
       }
     });
 
-    app.get("/userExists/:email", async (req, res) => {
+    // register as employee
+    app.post("/register-employee", async (req, res) => {
       try {
-        const { email } = req.params;
-        const user = await userCollection.findOne({ email });
-        res.json({ exists: !!user });
+        // Extract data from request body
+        const { fullName, email, password, dateOfBirth } = req.body;
+
+        // Check if email is already registered
+        const existingEmployee = await userCollection.findOne({ email });
+        if (existingEmployee) {
+          return res.status(400).json({ error: "Email already exists" });
+        }
+
+        // Insert new employee into the database
+        await userCollection.insertOne({
+          fullName,
+          email,
+          password, // Remember to hash the password before saving it in production
+          dateOfBirth,
+          image: null,
+          companyName: null, // Initially set to null
+          companyLogo: null, // Initially set to null
+          role: "employee", // Set the role to employee
+          team: [], // Empty array for team, will be updated by HR manager
+        });
+
+        // Respond with success message
+        res.status(201).json({ message: "Employee registered successfully" });
       } catch (error) {
-        console.error("Error checking user existence:", error);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
-    app.post("/userAdd", async (req, res) => {
-      try {
-        const newUser = req.body;
-        const result = await userCollection.insertOne(newUser);
-        console.log(result);
-        res.status(201).json({ message: "User added successfully" });
-      } catch (error) {
-        console.error("Error adding user:", error);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
-    app.get("/all-book-home", async (req, res) => {
-      let limitValue = 9; // Default limit value
-      const { limit } = req.query;
-
-      // Check if query parameter 'limit' exists and its value is 'all'
-      if (limit && limit.toLowerCase() === "all") {
-        limitValue = null; // Set limitValue to null to return all data
-      }
-
-      // Create query to find books with optional limit
-      const query = bookCollection.find().sort({ _id: -1 });
-      if (limitValue !== null) {
-        query.limit(limitValue);
-      }
-
-      // Execute the query
-      const result = await query.toArray();
-
-      // Send the result
-      res.send(result);
-    });
-
-    app.get("/categories", async (req, res) => {
-      try {
-        // Step 1: Retrieve Categories
-        const categories = await bookCollection
-          .aggregate([{ $group: { _id: "$category" } }])
-          .toArray();
-
-        // Extract category names from the result
-        const categoryNames = categories.map((category) => category._id);
-
-        // Respond with the categories
-        res.json(categoryNames);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
-    app.get("/books-by-category/:category", async (req, res) => {
-      const { category } = req.params;
-      try {
-        const books = await bookCollection
-          .find({ category: category })
-          .toArray();
-        res.send(books);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
-    app.patch("/return-book/:bookId", async (req, res) => {
-      try {
-        const { bookId } = req.params;
-        const { email } = req.body;
-
-        // Update book's borrowedBy array
-        const book = await bookCollection.updateOne(
-          { _id: new ObjectId(bookId) },
-          {
-            $pull: { borrowedBy: { email } },
-            $inc: { quantity: 1 },
-          }
-        );
-
-        // Update user's borrowedBooks array
-        const user = await userCollection.updateOne(
-          { email },
-          { $pull: { borrowedBooks: bookId } }
-        );
-
-        res.status(200).send("Book returned successfully");
-      } catch (error) {
-        console.error("Error returning book:", error);
-        res.status(500).send("Internal Server Error");
-      }
-    });
-
-    app.get("/check-user-role", async (req, res) => {
-      const user = await userCollection.findOne({ email: req.query.email });
-      if (!user || user.role !== "admin") {
-        res.send("normal");
-      } else {
-        res.send("admin");
-      }
-    });
-
-    // token removed START
-
-    app.get("/all-book", async (req, res) => {
-      let limitValue = 9; // Default limit value
-      const { limit } = req.query;
-
-      // Check if query parameter 'limit' exists and its value is 'all'
-      if (limit && limit.toLowerCase() === "all") {
-        limitValue = null; // Set limitValue to null to return all data
-      }
-
-      // Create query to find books with optional limit
-      const query = bookCollection.find().sort({ _id: -1 });
-      if (limitValue !== null) {
-        query.limit(limitValue);
-      }
-
-      // Execute the query
-      const result = await query.toArray();
-
-      // Send the result
-      res.send(result);
-    });
-
-    app.get("/book-details/:bookId", async (req, res) => {
-      try {
-        const { bookId } = req.params;
-        const query = { _id: new ObjectId(bookId) };
-        // Query the database for the details of the selected book
-        const book = await bookCollection.findOne(query);
-        // Respond with the book details
-        res.json(book);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
-    app.post("/borrow-book/:bookId", async (req, res) => {
-      try {
-        const { bookId } = req.params;
-        const { email, displayName, returnDate } = req.body;
-        // Query the database for the book
-        const query = { _id: new ObjectId(bookId) };
-        const book = await bookCollection.findOne(query);
-
-        // Query the database for the user
-        const user = await userCollection.findOne({ email: email });
-        // Check if the user has already borrowed the book
-        const alreadyBorrowed = book.borrowedBy.some(
-          (borrower) => borrower.email === email
-        );
-
-        if (alreadyBorrowed) {
-          return res.send({ message: "You have already borrowed this book" });
-        }
-
-        // Check if the user has reached the maximum borrowing limit
-        if (user.borrowedBooks.length >= 3) {
-          return res.send({
-            message: "You have reached the maximum borrowing limit",
-          });
-        }
-
-        // Update book details to mark it as borrowed
-        const updatedBook = await bookCollection.findOneAndUpdate(
-          query,
-          {
-            $push: {
-              borrowedBy: {
-                email,
-                name: displayName,
-                borrowDate: new Date().toLocaleDateString(),
-                returnDate: returnDate,
-              },
-            },
-            $inc: { quantity: -1 },
-          },
-          { new: true }
-        );
-
-        // Update user's borrowing history
-        await userCollection.findOneAndUpdate(
-          { email: email },
-          { $push: { borrowedBooks: bookId } }
-        );
-
-        // Respond with the updated book details
-        res.json(updatedBook);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
-    app.post("/add-book", async (req, res) => {
-      try {
-        const user = await userCollection.findOne({ email: req.query.email });
-
-        if (!user || user.role !== "admin") {
-          return res.send(user.role);
-        }
-
-        // Extract book details from request body
-        const { image, name, quantity, author, category, description, rating } =
-          req.body;
-        const bookQuantity = parseInt(quantity);
-        const bookRating = parseInt(rating);
-
-        // Create a new book object
-        const newBook = {
-          image,
-          name,
-          quantity: bookQuantity,
-          author,
-          category,
-          description,
-          rating: bookRating,
-          // Initialize `borrowedBy` as an array of objects with null values
-          borrowedBy: [
-            {
-              email: null,
-              name: null,
-              borrowDate: null,
-              returnDate: null,
-            },
-          ],
-        };
-
-        // Insert the new book into the database
-        const result = await bookCollection.insertOne(newBook);
-        // Respond with the result
-        res.json(result);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
-    // app.patch("/update-book/:id", async (req, res) => {
-    //   try {
-    //     const user = await userCollection.findOne({ email: req.query.email });
-
-    //     if (!user || user.role !== "admin") {
-    //       return res.send(user.role);
-    //   }
-
-    //     const { id } = req.params;
-    //     const updatedBook = req.body;
-    //     const { _id, ...updatedFields } = updatedBook;
-    //     const query = { _id: new ObjectId(id) };
-    //     const update = {
-    //       $set: updatedFields,
-    //     };
-    //     // Find the book by its ID and update it
-    //     const book = await bookCollection.updateOne(query, update);
-    //     res.send(book); // Return the updated book
-    //   } catch (error) {
-    //     console.error(error);
-    //     res.status(500).json({ error: "Internal server error" });
-    //   }
-    // });
-
-    app.get("/borrowed-books/:email", async (req, res) => {
-      try {
-        const { email } = req.params;
-        // Query the database for the user's borrowed books
-        const user = await userCollection.findOne({ email: email });
-        if (!user) {
-          return res.send({ message: "user not found" });
-        }
-        const borrowedBookIds = user.borrowedBooks;
-
-        // Fetch details of each borrowed book
-        const borrowedBooks = [];
-        for (const bookId of borrowedBookIds) {
-          const query = { _id: new ObjectId(bookId) };
-          const book = await bookCollection.findOne(query);
-          if (book) {
-            borrowedBooks.push(book);
-          }
-        }
-        // Respond with the borrowed books
-        res.json(borrowedBooks);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
-    // token removed END
-
-    // with token START
-
-    // app.get("/all-book", verifyToken, async (req, res) => {
-    //   if (req.user.email !== req.query.email) {
-    //     console.log("ALL section -- email not verified");
-    //     return res.status(403).send({ message: "forbidden access" });
-    //   }
-
-    //   console.log("ALL section -- email verified");
-
-    //   let limitValue = 9; // Default limit value
-    //   const { limit } = req.query;
-
-    //   // Check if query parameter 'limit' exists and its value is 'all'
-    //   if (limit && limit.toLowerCase() === "all") {
-    //     limitValue = null; // Set limitValue to null to return all data
-    //   }
-
-    //   // Create query to find books with optional limit
-    //   const query = bookCollection.find().sort({ _id: -1 });
-    //   if (limitValue !== null) {
-    //     query.limit(limitValue);
-    //   }
-
-    //   // Execute the query
-    //   const result = await query.toArray();
-
-    //   // Send the result
-    //   res.send(result);
-    // });
-
-    // app.get("/book-details/:bookId", verifyToken, async (req, res) => {
-    //   try {
-    //     if (req.user.email !== req.query.email) {
-    //       console.log("book section -- email not verified");
-    //       return res.status(403).send({ message: "forbidden access" });
-    //     }
-
-    //     console.log("book section -- email verified");
-
-    //     const { bookId } = req.params;
-    //     const query = { _id: new ObjectId(bookId) };
-    //     // Query the database for the details of the selected book
-    //     const book = await bookCollection.findOne(query);
-    //     // Respond with the book details
-    //     res.json(book);
-    //   } catch (err) {
-    //     console.error(err);
-    //     res.status(500).json({ message: "Internal server error" });
-    //   }
-    // });
-
-    // app.post("/borrow-book/:bookId", verifyToken, async (req, res) => {
-    //   try {
-    //     if (req.user.email !== req.query.email) {
-    //       console.log("BORROW section -- email not verified");
-    //       return res.status(403).send({ message: "forbidden access" });
-    //     }
-
-    //     console.log("BORROW section -- email verified");
-
-    //     const { bookId } = req.params;
-    //     const { email, displayName, returnDate } = req.body;
-    //     // Query the database for the book
-    //     const query = { _id: new ObjectId(bookId) };
-    //     const book = await bookCollection.findOne(query);
-
-    //     // Query the database for the user
-    //     const user = await userCollection.findOne({ email: email });
-    //     // Check if the user has already borrowed the book
-    //     const alreadyBorrowed = book.borrowedBy.some(
-    //       (borrower) => borrower.email === email
-    //     );
-
-    //     if (alreadyBorrowed) {
-    //       return res.send({ message: "You have already borrowed this book" });
-    //     }
-
-    //     // Check if the user has reached the maximum borrowing limit
-    //     if (user.borrowedBooks.length >= 3) {
-    //       return res.send({
-    //         message: "You have reached the maximum borrowing limit",
-    //       });
-    //     }
-
-    //     // Update book details to mark it as borrowed
-    //     const updatedBook = await bookCollection.findOneAndUpdate(
-    //       query,
-    //       {
-    //         $push: {
-    //           borrowedBy: {
-    //             email,
-    //             name: displayName,
-    //             borrowDate: new Date().toLocaleDateString(),
-    //             returnDate: returnDate,
-    //           },
-    //         },
-    //         $inc: { quantity: -1 },
-    //       },
-    //       { new: true }
-    //     );
-
-    //     // Update user's borrowing history
-    //     await userCollection.findOneAndUpdate(
-    //       { email: email },
-    //       { $push: { borrowedBooks: bookId } }
-    //     );
-
-    //     // Respond with the updated book details
-    //     res.json(updatedBook);
-    //   } catch (err) {
-    //     console.error(err);
-    //     res.status(500).json({ message: "Internal server error" });
-    //   }
-    // });
-
-    // app.post("/add-book", verifyToken, async (req, res) => {
-    //   try {
-    //     if (req.user.email !== req.query.email) {
-    //       console.log("ADD BOOK section -- email not verified");
-    //       return res.status(403).send({ message: "forbidden access" });
-    //     }
-
-    //     const user = await userCollection.findOne({ email: req.query.email });
-
-    //     if (!user || user.role !== "admin") {
-    //         return res.send(user.role);
-    //     }
-
-    //     // Extract book details from request body
-    //     const { image, name, quantity, author, category, description, rating } =
-    //       req.body;
-    //     const bookQuantity = parseInt(quantity);
-    //     const bookRating = parseInt(rating);
-
-    //     // Create a new book object
-    //     const newBook = {
-    //       image,
-    //       name,
-    //       quantity: bookQuantity,
-    //       author,
-    //       category,
-    //       description,
-    //       rating: bookRating,
-    //       // Initialize `borrowedBy` as an array of objects with null values
-    //       borrowedBy: [
-    //         {
-    //           email: null,
-    //           name: null,
-    //           borrowDate: null,
-    //           returnDate: null,
-    //         },
-    //       ],
-    //     };
-
-    //     // Insert the new book into the database
-    //     const result = await bookCollection.insertOne(newBook);
-    //     // Respond with the result
-    //     res.json(result);
-    //   } catch (err) {
-    //     console.error(err);
-    //     res.status(500).json({ message: "Internal server error" });
-    //   }
-    // });
-
-    app.patch("/update-book/:id", verifyToken, async (req, res) => {
-      console.log("from token: ",req.user.email)
-      console.log("from query: ", req.query.email)
-      try {
-        if (req.user.email !== req.query.email) {
-          console.log("UPDATE section -- email not verified");
-          return res.status(403).send({ message: "forbidden access" });
-        }
-        console.log("UPDATE section -- email verified");
-        return res.status(200).send({message:"Token verified"})
-
-        const user = await userCollection.findOne({ email: req.query.email });
-
-        if (!user || user.role !== "admin") {
-          return res.send(user.role);
-        }
-
-        const { id } = req.params;
-        const updatedBook = req.body;
-        const { _id, ...updatedFields } = updatedBook;
-        const query = { _id: new ObjectId(id) };
-        const update = {
-          $set: updatedFields,
-        };
-        // Find the book by its ID and update it
-        const book = await bookCollection.updateOne(query, update);
-        res.send(book); // Return the updated book
-      } catch (error) {
-        console.error(error);
+        console.error("Error registering employee:", error);
         res.status(500).json({ error: "Internal server error" });
       }
     });
 
-    // app.get("/borrowed-books/:email", verifyToken, async (req, res) => {
-    //   try {
-    //     const { email } = req.params;
+    //register hr
+    app.post("/register-hr-manager", async (req, res) => {
+      try {
+        // Extract data from request body
+        const {
+          fullName,
+          companyName,
+          companyLogo,
+          email,
+          password,
+          dateOfBirth,
+          selectedPackage,
+        } = req.body;
+    
+        // Check if email is already registered
+        const existingHRManager = await userCollection.findOne({ email });
+        if (existingHRManager) {
+          return res.status(400).json({ error: "Email already exists" });
+        }
+    
+        // Insert new HR manager into the database
+        const result = await userCollection.insertOne({
+          fullName,
+          companyName,
+          companyLogo,
+          email,
+          password, // Remember to hash the password before saving it in production
+          dateOfBirth,
+          role: "hr", // Set the role to HR manager
+          package: null,
+          limit: 0,
+          team: [], // Empty array for team, will be updated by HR manager
+        });
+        res.status(201).json({ message: "HR manager registered successfully" });
+      } catch (error) {
+        console.error("Error registering HR manager:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
 
-    //     if (req.user.email !== email) {
-    //       console.log("UPDATE section -- email not verified");
-    //       return res.status(403).send({ message: "forbidden access" });
-    //     }
+    // check user role
+    app.get('/users/:email', async (req, res) => {
+      const email = req.params.email;  // Extract email from request parameters
+      try {
+        const query = { email: email };
+        const user = await userCollection.findOne(query);
+        let role;
+        if (user) {
+          role = user.role;
+        }
+        res.send({ role });
+      } catch (error) {
+        console.error("Error fetching user role:", error);
+        res.status(500).send({ error: "Internal server error" });
+      }
+    });
 
-    //     console.log("BORROW section -- email verified");
+    // payment intent
+    app.post('/create-payment-intent', async (req, res) => {
+      const { price } = req.body;
+      const amount = parseInt(price * 100);
 
-    //     // Query the database for the user's borrowed books
-    //     const user = await userCollection.findOne({ email: email });
-    //     if (!user) {
-    //       return res.send({ message: "user not found" });
-    //     }
-    //     const borrowedBookIds = user.borrowedBooks;
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: 'usd',
+        payment_method_types: ['card']
+      });
 
-    //     // Fetch details of each borrowed book
-    //     const borrowedBooks = [];
-    //     for (const bookId of borrowedBookIds) {
-    //       const query = { _id: new ObjectId(bookId) };
-    //       const book = await bookCollection.findOne(query);
-    //       if (book) {
-    //         borrowedBooks.push(book);
-    //       }
-    //     }
-    //     // Respond with the borrowed books
-    //     res.json(borrowedBooks);
-    //   } catch (err) {
-    //     console.error(err);
-    //     res.status(500).json({ message: "Internal server error" });
-    //   }
-    // });
+      res.send({
+        clientSecret: paymentIntent.client_secret
+      })
+    });
 
-    // with token END
+    // update hr's limit
+    app.post('/update-payment', async (req, res) => {
+      try {
+        const { email, package, limit } = req.body;
+    
+        // Validate the input data
+        if (!email || !package || !limit) {
+          return res.status(400).json({ error: "Invalid input data" });
+        }
+    
+        // Find the existing user by email
+        const existingUser = await userCollection.findOne({ email });
+    
+        // Determine the new limit value
+        const currentLimit = existingUser && existingUser.limit ? existingUser.limit : 0;
+        const newLimit = currentLimit + parseInt(limit);
+    
+        // Update the user's payment and limit fields in the database
+        const result = await userCollection.updateOne(
+          { email },
+          { $set: { package, limit: newLimit } }
+        );
+    
+        if (result.modifiedCount > 0) {
+          res.status(200).json({ paymentResult: 'success' });
+        } else {
+          res.status(400).json({ error: "Failed to update payment details" });
+        }
+      } catch (error) {
+        console.error("Error updating payment details:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+    
+    
+    
 
-    // Send a ping to confirm a successful connection
-    // await client.db("admin").command({ ping: 1 });
-    // console.log(
-    //   "Pinged your deployment. You successfully connected to MongoDB!"
-    // );
+
   } finally {
     // Ensures that the client will close when you finish/error
   }
