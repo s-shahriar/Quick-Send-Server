@@ -64,6 +64,7 @@ async function run() {
   try {
     const assetsCollection = client.db("assetMartDB").collection("assets");
     const userCollection = client.db("assetMartDB").collection("users");
+    const assetRequestsCollection = client.db("assetMartDB").collection("assetRequests");
 
     // jwt generate
 
@@ -333,6 +334,43 @@ async function run() {
       } catch (error) {
         console.error("Error deleting asset:", error);
         res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    // asset request from employee
+    app.post("/request-asset", async (req, res) => {
+      try {
+        const { assetId, userEmail, notes } = req.body; // Extract data from the request body
+        console.log("important",assetId,userEmail,notes)
+        
+        // Find the user to get the logged-in user's information
+        const userFromDB = await userCollection.findOne({ email: userEmail });
+        const asset = await assetsCollection.findOne({ _id: new ObjectId(assetId) });
+    
+        // Create a new asset request
+        const newRequest = {
+          assetId: new ObjectId(assetId),
+          userId: new ObjectId(userFromDB._id),
+          assetName: asset.assetName,
+          assetType: asset.assetType,
+          requestDate: new Date(),
+          approvalDate: null,
+          requestStatus: "pending",
+          notes: notes,
+          companyName: userFromDB.companyName, // Store the logged-in user's company information
+        };
+
+        console.log(newRequest)
+    
+        const result = await assetRequestsCollection.insertOne(newRequest);
+    
+        res.status(201).json({
+          message: "Asset requested successfully",
+          requestId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Error requesting asset:", error);
+        res.status(500).json({ error: "Internal server error" });
       }
     });
 
