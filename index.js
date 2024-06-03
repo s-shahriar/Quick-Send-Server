@@ -64,7 +64,9 @@ async function run() {
   try {
     const assetsCollection = client.db("assetMartDB").collection("assets");
     const userCollection = client.db("assetMartDB").collection("users");
-    const assetRequestsCollection = client.db("assetMartDB").collection("assetRequests");
+    const assetRequestsCollection = client
+      .db("assetMartDB")
+      .collection("assetRequests");
 
     // jwt generate
 
@@ -316,7 +318,7 @@ async function run() {
       } catch (error) {
         console.error("Error updating asset:", error);
         res.status(500).json({ message: "Internal server error" });
-      } 
+      }
     });
 
     // delete asset
@@ -325,7 +327,7 @@ async function run() {
       const query = { _id: new ObjectId(id) };
       try {
         const deletedAsset = await assetsCollection.deleteOne(query);
-        
+
         if (deletedAsset) {
           res.status(200).json({ message: "Asset deleted successfully" });
         } else {
@@ -340,13 +342,13 @@ async function run() {
     // asset request from employee
     app.post("/request-asset", async (req, res) => {
       try {
-        const { assetId, userEmail, notes } = req.body; // Extract data from the request body
-        console.log("important",assetId,userEmail,notes)
-        
+        const { assetId, userEmail, notes } = req.body;
         // Find the user to get the logged-in user's information
         const userFromDB = await userCollection.findOne({ email: userEmail });
-        const asset = await assetsCollection.findOne({ _id: new ObjectId(assetId) });
-    
+        const asset = await assetsCollection.findOne({
+          _id: new ObjectId(assetId),
+        });
+
         // Create a new asset request
         const newRequest = {
           assetId: new ObjectId(assetId),
@@ -359,11 +361,8 @@ async function run() {
           notes: notes,
           companyName: userFromDB.companyName, // Store the logged-in user's company information
         };
-
-        console.log(newRequest)
-    
         const result = await assetRequestsCollection.insertOne(newRequest);
-    
+
         res.status(201).json({
           message: "Asset requested successfully",
           requestId: result.insertedId,
@@ -374,9 +373,90 @@ async function run() {
       }
     });
 
+    // Page: My Requested Assets (For Employee)
+    // part 1: fetch assets
+    app.get("/requested-assets/:userEmail", async (req, res) => {
+      try {
+        const userEmail = req.params.userEmail;
+        const userFromDB = await userCollection.findOne({ email: userEmail });
+        let query = { userId: new ObjectId(userFromDB._id) };
+
+        const assets = await assetRequestsCollection.find(query).toArray();
+        res.status(200).json(assets);
+      } catch (error) {
+        console.error("Error fetching requested assets:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // part 2: Cancel Request API
+    app.post("/cancel-request", async (req, res) => {
+      try {
+        const { requestId } = req.body; // Extract request ID from the request body
+        console.log(requestId);
+        //const query = {_id: new ObjectId(requestId)}
+        // const result = await assetRequestsCollection.findOne(query)
+        // console.log(result)
+        const result = await assetRequestsCollection.updateOne(
+          { _id: new ObjectId(requestId), requestStatus: "pending" },
+          { $set: { requestStatus: "canceled", approvalDate: null } }
+        );
+
+        console.log(result);
+
+        if (result.modifiedCount === 0) {
+          return res
+            .status(400)
+            .json({ error: "Request not found or already processed" });
+        }
+
+        res.status(200).json({ message: "Request canceled successfully" });
+      } catch (error) {
+        console.error("Error canceling request:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // part 3: Return Asset API
+    app.post("/return-asset", async (req, res) => {
+      try {
+        const { requestId } = req.body;
+
+        // Find the request to get the asset details
+        const request = await assetRequestsCollection.findOne({
+          _id: new ObjectId(requestId),
+        });
+
+        // Update the request status to "returned" and increase the asset quantity by one
+        const updateRequest = assetRequestsCollection.updateOne(
+          { _id: new ObjectId(requestId) },
+          { $set: { requestStatus: "returned" } }
+        );
+
+        const asset = await assetsCollection.findOne({
+          _id: new ObjectId(request.assetId),
+        });
+
+        const newQuantity = parseInt(asset.quantity) + 1;
+
+        const updateAsset = assetsCollection.updateOne(
+          { _id: new ObjectId(request.assetId) },
+          { $set: { quantity: newQuantity.toString() } },
+        );
+
+        await Promise.all([updateRequest, asset, updateAsset]);
+
+        res.status(200).json({ message: "Asset returned successfully" });
+      } catch (error) {
+        console.error("Error returning asset:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
 
 
-  } finally { }
+
+  } finally {
+  }
 }
 run().catch(console.dir);
 
