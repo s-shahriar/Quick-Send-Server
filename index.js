@@ -11,8 +11,8 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const corsOptions = {
   origin: [
     "http://localhost:5173",
-    "https://libhub-46f8c.web.app",
-    "https://libhub-46f8c.firebaseapp.com",
+    "https://assetmart-8e93a.web.app",
+    "https://assetmart-8e93a.firebaseapp.com",
   ],
   credentials: true,
   optionSuccessStatus: 200,
