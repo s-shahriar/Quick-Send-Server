@@ -459,14 +459,16 @@ async function run() {
       }
     });
 
-    // remove a team member from 
+    // remove a team member from
     app.put("/remove-from-team/:employeeId", async (req, res) => {
       try {
         const { employeeId } = req.params;
-        console.log(employeeId)
-        const hrManagerEmail = req.body.hrManagerEmail
+        console.log(employeeId);
+        const hrManagerEmail = req.body.hrManagerEmail;
 
-        const hrManager = await userCollection.findOne({ email: hrManagerEmail });    
+        const hrManager = await userCollection.findOne({
+          email: hrManagerEmail,
+        });
         // Update the employee's companyName to null to remove them from the team
         const result = await userCollection.updateOne(
           { _id: new ObjectId(employeeId) },
@@ -479,10 +481,14 @@ async function run() {
             { _id: new ObjectId(hrManager._id) },
             { $inc: { limit: 1 } }
           );
-    
-          res.status(200).json({ message: "Employee removed from the team successfully" });
+
+          res
+            .status(200)
+            .json({ message: "Employee removed from the team successfully" });
         } else {
-          res.status(404).json({ error: "Employee not found or already removed from the team" });
+          res.status(404).json({
+            error: "Employee not found or already removed from the team",
+          });
         }
       } catch (error) {
         console.error("Error removing employee from the team:", error);
@@ -490,8 +496,84 @@ async function run() {
       }
     });
 
-    app.purge()
+    // Page: Add an Employee Page (Only for HR Manager)
+    // part 1: Fetch unaffiliated employees
+    app.get("/unaffiliated-employees", async (req, res) => {
+      try {
+        const unaffiliatedEmployees = await userCollection
+          .find({ $or: [{ companyName: null }, { companyName: "" }] })
+          .toArray();
+        res.status(200).json(unaffiliatedEmployees);
+      } catch (error) {
+        console.error("Error fetching unaffiliated employees:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
 
+    // add multiple people to the team
+    app.put("/add-to-team", async (req, res) => {
+      const { employeeIds, hrManagerEmail } = req.body;
+
+      try {
+        // Fetch HR manager's details including the company name and limit
+        const hrManager = await userCollection.findOne({
+          email: hrManagerEmail,
+        });
+
+        const companyName = hrManager.companyName;
+        const currentLimit = hrManager.limit;
+        const numberOfEmployeesToAdd = employeeIds.length;
+
+        // Check if the HR manager is within their limit
+        if (numberOfEmployeesToAdd > currentLimit) {
+          return res
+            .status(400)
+            .json({
+              error: "You can't add these members, please upgrade your account",
+            });
+        }
+
+        // Update the employees with the company name
+        const updateResult = await userCollection.updateMany(
+          { _id: { $in: employeeIds.map((id) => new ObjectId(id)) } },
+          { $set: { companyName } }
+        );
+
+        if (updateResult.modifiedCount === 0) {
+          return res.status(404).json({ error: "No employees were updated" });
+        }
+
+        // Deduct the number of people added from the HR manager's limit
+        const newLimit = currentLimit - numberOfEmployeesToAdd;
+        await userCollection.updateOne(
+          { email: hrManagerEmail },
+          { $set: { limit: newLimit } }
+        );
+
+        res
+          .status(200)
+          .json({ message: "Employees successfully added to the team" });
+      } catch (error) {
+        console.error("Error adding employees to the team:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // Fetch HR limit based on user email
+    app.post("/hr-limit", async (req, res) => {
+      const { email } = req.body;
+      try {
+        const user = await userCollection.findOne({ email });
+        if (!user) {
+          return res.status(404).json({ error: "HR Manager not found" });
+        }
+        const limit = user.limit;
+        res.status(200).json({ limit });
+      } catch (error) {
+        console.error("Error fetching HR limit:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
   } finally {
   }
 }
