@@ -526,11 +526,9 @@ async function run() {
 
         // Check if the HR manager is within their limit
         if (numberOfEmployeesToAdd > currentLimit) {
-          return res
-            .status(400)
-            .json({
-              error: "You can't add these members, please upgrade your account",
-            });
+          return res.status(400).json({
+            error: "You can't add these members, please upgrade your account",
+          });
         }
 
         // Update the employees with the company name
@@ -574,6 +572,86 @@ async function run() {
         res.status(500).json({ error: "Internal server error" });
       }
     });
+
+    // All Requests Page (Only for HR Manager)
+    // part 1: Get All Requests with Search
+    app.get("/requests/:email", async (req, res) => {
+      try {
+        const userEmail = req.params.email;
+    
+        // Find HR's information to get companyName
+        const user = await userCollection.findOne({ email: userEmail });
+        if (!user) {
+          return res.status(404).json({ error: "User not found" });
+        }
+    
+        const companyName = user.companyName;
+    
+        // Fetch requests matching the companyName and include requester and asset details
+        const requests = await assetRequestsCollection.find({ companyName }).toArray();
+    
+        const detailedRequests = await Promise.all(requests.map(async (request) => {
+          const userDetail = await userCollection.findOne({ _id: new ObjectId(request.userId) });
+          const assetDetail = await assetsCollection.findOne({ _id: new ObjectId(request.assetId) });
+    
+          return {
+            ...request,
+            requesterName: userDetail ? userDetail.fullName : "Unknown User",
+            requesterEmail: userDetail ? userDetail.email : "Unknown Email",
+            assetName: assetDetail ? assetDetail.assetName : "Unknown Asset",
+            assetType: assetDetail ? assetDetail.assetType : "Unknown Type",
+          };
+        }));
+    
+        res.status(200).json(detailedRequests);
+      } catch (error) {
+        console.error("Error fetching requests:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // part 2: approve request
+    app.post("/approve-request", async (req, res) => {
+      const { requestId } = req.body;
+      try {
+        const result = await assetRequestsCollection.updateOne(
+          { _id: new ObjectId(requestId) },
+          { $set: { requestStatus: "approved", approvalDate: new Date() } }
+        );
+        if (result.modifiedCount > 0) {
+          res.status(200).json({ message: "Request approved successfully" });
+        } else {
+          res.status(404).json({ error: "Request not found" });
+        }
+      } catch (error) {
+        console.error("Error approving request:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // part 3: reject request
+    app.post("/reject-request", async (req, res) => {
+      const { requestId } = req.body;
+      try {
+        const result = await assetRequestsCollection.updateOne(
+          { _id: new ObjectId(requestId) },
+          { $set: { requestStatus: "rejected", approvalDate: new Date() } }
+        );
+        if (result.modifiedCount > 0) {
+          res.status(200).json({ message: "Request rejected successfully" });
+        } else {
+          res.status(404).json({ error: "Request not found" });
+        }
+      } catch (error) {
+        console.error("Error rejecting request:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+    
+    
+    
+
+
   } finally {
   }
 }
