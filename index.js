@@ -647,6 +647,33 @@ async function run() {
         res.status(500).json({ error: "Internal server error" });
       }
     });
+
+    // update profile
+
+    app.put('/updateProfile/:email', async (req, res) => {
+      const { fullName, photoURL, phoneNumber } = req.body;
+      const email = req.params.email;
+      console.log(email)    
+      try {
+        const user = await userCollection.findOne({ email: email });
+
+        const updateResult = await userCollection.updateOne(
+          { email: email },
+          { $set: { fullName: fullName, image: photoURL} }
+        );
+        console.log(updateResult)
+    
+        if (updateResult.modifiedCount === 0) {
+          return res.status(500).json({ message: 'Failed to update profile' });
+        }
+    
+    
+        res.status(200).json({ message: 'Profile updated successfully', user: { ...user, displayName: fullName, photoURL: photoURL, phoneNumber: phoneNumber } });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
     
     
     
