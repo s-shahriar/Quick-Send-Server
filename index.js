@@ -120,7 +120,7 @@ async function run() {
           password, // Remember to hash the password before saving it in production
           dateOfBirth,
           image: null,
-          companyName: null, // Initially set to null
+          companyName: "", // Initially set to null
           companyLogo: null, // Initially set to null
           role: "employee", // Set the role to employee
           team: [], // Empty array for team, will be updated by HR manager
@@ -286,7 +286,6 @@ async function run() {
     app.get("/assets/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
-      console.log(query);
       try {
         const asset = await assetsCollection.findOne(query);
         if (asset) {
@@ -392,17 +391,12 @@ async function run() {
     // part 2: Cancel Request API
     app.post("/cancel-request", async (req, res) => {
       try {
-        const { requestId } = req.body; // Extract request ID from the request body
-        console.log(requestId);
-        //const query = {_id: new ObjectId(requestId)}
-        // const result = await assetRequestsCollection.findOne(query)
-        // console.log(result)
+        const { requestId } = req.body;
         const result = await assetRequestsCollection.updateOne(
           { _id: new ObjectId(requestId), requestStatus: "pending" },
           { $set: { requestStatus: "canceled", approvalDate: null } }
         );
 
-        console.log(result);
 
         if (result.modifiedCount === 0) {
           return res
@@ -441,7 +435,7 @@ async function run() {
 
         const updateAsset = assetsCollection.updateOne(
           { _id: new ObjectId(request.assetId) },
-          { $set: { quantity: newQuantity.toString() } },
+          { $set: { quantity: newQuantity.toString() } }
         );
 
         await Promise.all([updateRequest, asset, updateAsset]);
@@ -453,6 +447,50 @@ async function run() {
       }
     });
 
+    // team member list
+    app.post("/employee-list", async (req, res) => {
+      const email = req.body.email;
+      try {
+        const user = await userCollection.findOne({ email });
+        const companyName = user.companyName;
+        const employees = await userCollection.find({ companyName }).toArray();
+        res.status(200).json(employees);
+      } catch (error) {
+        console.error("Error fetching employee list:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // remove a team member
+    app.put("/remove-from-team/:employeeId", async (req, res) => {
+      try {
+        const { employeeId } = req.params;
+        console.log(employeeId)
+        const hrManagerEmail = req.body.hrManagerEmail
+
+        const hrManager = await userCollection.findOne({ email: hrManagerEmail });    
+        // Update the employee's companyName to null to remove them from the team
+        const result = await userCollection.updateOne(
+          { _id: new ObjectId(employeeId) },
+          { $set: { companyName: "" } }
+        );
+
+        if (result.modifiedCount > 0) {
+          // Increment the HR Manager's limit by 1
+          await userCollection.updateOne(
+            { _id: new ObjectId(hrManager._id) },
+            { $inc: { limit: 1 } }
+          );
+    
+          res.status(200).json({ message: "Employee removed from the team successfully" });
+        } else {
+          res.status(404).json({ error: "Employee not found or already removed from the team" });
+        }
+      } catch (error) {
+        console.error("Error removing employee from the team:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
 
 
   } finally {
