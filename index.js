@@ -396,8 +396,6 @@ async function run() {
           { _id: new ObjectId(requestId), requestStatus: "pending" },
           { $set: { requestStatus: "canceled", approvalDate: null } }
         );
-
-
         if (result.modifiedCount === 0) {
           return res
             .status(400)
@@ -461,7 +459,7 @@ async function run() {
       }
     });
 
-    // remove a team member
+    // remove a team member from 
     app.put("/remove-from-team/:employeeId", async (req, res) => {
       try {
         const { employeeId } = req.params;
@@ -492,6 +490,7 @@ async function run() {
       }
     });
 
+    app.purge()
 
   } finally {
   }
