@@ -306,6 +306,7 @@ async function run() {
     app.patch("/assets/:id", async (req, res) => {
       const id = req.params.id;
       const updateData = req.body;
+      console.log()
       try {
         const result = await assetsCollection.updateOne(
           { _id: new ObjectId(id) },
