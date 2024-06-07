@@ -180,16 +180,19 @@ async function run() {
       try {
         const query = { email: email };
         const user = await userCollection.findOne(query);
-        let role;
+        let role, companyName, companyLogo;
         if (user) {
           role = user.role;
+          companyName = user.companyName;
+          companyLogo = user.companyLogo;
         }
-        res.send({ role });
+        res.send({ role, companyName, companyLogo });
       } catch (error) {
-        console.error("Error fetching user role:", error);
+        console.error("Error fetching user data:", error);
         res.status(500).send({ error: "Internal server error" });
       }
     });
+    
 
     // payment intent
     app.post("/create-payment-intent", async (req, res) => {
@@ -472,7 +475,7 @@ async function run() {
         // Update the employee's companyName to null to remove them from the team
         const result = await userCollection.updateOne(
           { _id: new ObjectId(employeeId) },
-          { $set: { companyName: "" } }
+          { $set: { companyName: "", companyLogo: null } }
         );
 
         if (result.modifiedCount > 0) {
@@ -521,6 +524,7 @@ async function run() {
         });
 
         const companyName = hrManager.companyName;
+        const companyLogo = hrManager.companyLogo;
         const currentLimit = hrManager.limit;
         const numberOfEmployeesToAdd = employeeIds.length;
 
@@ -534,7 +538,7 @@ async function run() {
         // Update the employees with the company name
         const updateResult = await userCollection.updateMany(
           { _id: { $in: employeeIds.map((id) => new ObjectId(id)) } },
-          { $set: { companyName } }
+          { $set: { companyName, companyLogo } }
         );
 
         if (updateResult.modifiedCount === 0) {
@@ -614,15 +618,33 @@ async function run() {
     app.post("/approve-request", async (req, res) => {
       const { requestId } = req.body;
       try {
-        const result = await assetRequestsCollection.updateOne(
+        
+        // Find the request to get the asset details
+        const request = await assetRequestsCollection.findOne({
+          _id: new ObjectId(requestId),
+        });
+
+        // Update the request status to "returned" and decrease the asset quantity by one
+        const updateRequest = assetRequestsCollection.updateOne(
           { _id: new ObjectId(requestId) },
           { $set: { requestStatus: "approved", approvalDate: new Date() } }
         );
-        if (result.modifiedCount > 0) {
-          res.status(200).json({ message: "Request approved successfully" });
-        } else {
-          res.status(404).json({ error: "Request not found" });
-        }
+
+        const asset = await assetsCollection.findOne({
+          _id: new ObjectId(request.assetId),
+        });
+
+        const newQuantity = parseInt(asset.quantity) - 1;
+
+        const updateAsset = assetsCollection.updateOne(
+          { _id: new ObjectId(request.assetId) },
+          { $set: { quantity: newQuantity.toString() } }
+        );
+
+        await Promise.all([updateRequest, asset, updateAsset]);
+
+        res.status(200).json({ message: "Asset approved successfully" });
+
       } catch (error) {
         console.error("Error approving request:", error);
         res.status(500).json({ error: "Internal server error" });
@@ -653,27 +675,47 @@ async function run() {
     app.put('/updateProfile/:email', async (req, res) => {
       const { fullName, photoURL, phoneNumber } = req.body;
       const email = req.params.email;
-      console.log(email)    
+      console.log(email);
+    
       try {
         const user = await userCollection.findOne({ email: email });
-
-        const updateResult = await userCollection.updateOne(
-          { email: email },
-          { $set: { fullName: fullName, image: photoURL} }
-        );
-        console.log(updateResult)
+        console.log(user);
     
-        if (updateResult.modifiedCount === 0) {
-          return res.status(500).json({ message: 'Failed to update profile' });
+        if (!user) {
+          return res.status(404).json({ message: 'User not found' });
         }
     
+        // Check if the new values are different from the current values
+        const isFullNameChanged = fullName && fullName !== user.fullName;
+        const isPhotoURLChanged = photoURL && photoURL !== user.photoURL;
+        const isPhoneNumberChanged = phoneNumber && phoneNumber !== user.phoneNumber;
     
-        res.status(200).json({ message: 'Profile updated successfully', user: { ...user, displayName: fullName, photoURL: photoURL, phoneNumber: phoneNumber } });
+        // If no changes, return success without updating
+        if (!isFullNameChanged && !isPhotoURLChanged && !isPhoneNumberChanged) {
+          return res.status(200).json({ message: 'No changes detected, profile is already up to date', user });
+        }
+    
+        const updateFields = {};
+        if (isFullNameChanged) updateFields.fullName = fullName;
+        if (isPhotoURLChanged) updateFields.photoURL = photoURL;
+        if (isPhoneNumberChanged) updateFields.phoneNumber = phoneNumber;
+    
+        const updateResult = await userCollection.updateOne(
+          { email: email },
+          { $set: updateFields }
+        );
+        console.log(updateResult);
+    
+        res.status(200).json({
+          message: 'Profile updated successfully',
+          user: { ...user, ...updateFields }
+        });
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Internal server error' });
       }
     });
+    
     
     
     
