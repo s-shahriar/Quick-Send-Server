@@ -193,7 +193,6 @@ async function run() {
       }
     });
     
-
     // payment intent
     app.post("/create-payment-intent", async (req, res) => {
       const { price } = req.body;
@@ -715,12 +714,7 @@ async function run() {
         console.error(error);
         res.status(500).json({ message: 'Internal server error' });
       }
-    });
-    
-    
-    
-    
-
+    });        
 
   } finally {
   }
