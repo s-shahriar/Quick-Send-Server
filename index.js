@@ -1,18 +1,18 @@
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
 const cookieParser = require("cookie-parser");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
 const port = process.env.PORT || 3000;
 const app = express();
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 const corsOptions = {
   origin: [
     "http://localhost:5173",
-    "https://assetmart-8e93a.web.app",
-    "https://assetmart-8e93a.firebaseapp.com",
+    "https://mfs-project-d9f9e.web.app",
+    "https://mfs-project-d9f9e.firebaseapp.com",
   ],
   credentials: true,
   optionSuccessStatus: 200,
@@ -28,27 +28,6 @@ app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
 
-// verify jwt middleware
-const verifyToken = (req, res, next) => {
-  const token = req.cookies?.token;
-  if (!token) {
-    return res.status(401).send({ message: "Token error: Token not found" });
-  }
-  console.log("token found");
-  if (token) {
-    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
-      if (err) {
-        console.log("token ERROR");
-        return res
-          .status(401)
-          .send({ message: "Token authentication error", error: err.message });
-      }
-      req.user = decoded;
-      next();
-    });
-  }
-};
-
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.wpwwlgm.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -62,24 +41,20 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    const assetsCollection = client.db("assetMartDB").collection("assets");
-    const userCollection = client.db("assetMartDB").collection("users");
+    const allUsers = client.db("mfsDB").collection("allUsers");
+    const transactions = client.db("mfsDB").collection("transactions");
     const assetRequestsCollection = client
       .db("assetMartDB")
       .collection("assetRequests");
 
     // jwt generate
-
     app.post("/jwt", async (req, res) => {
       try {
         const email = req.body;
         const token = jwt.sign(email, process.env.ACCESS_TOKEN_SECRET, {
-          expiresIn: "365d",
+          expiresIn: "1h",
         });
-        res
-          .cookie("token", token, CookieOptions)
-          .status(200)
-          .send({ success: true, message: "Token generation success" });
+        res.send({ token });
       } catch (error) {
         console.error(error);
         res
@@ -88,18 +63,176 @@ async function run() {
       }
     });
 
+    // verify token
+    const verifyToken = (req, res, next) => {
+      const authorizationToken = req.headers.authorization;
+      if (!authorizationToken) {
+        return res.status(401).send({
+          message: "You are not authorized to access this route.",
+        });
+      }
+      const userToken = req.headers.authorization.split(" ")[1];
+      jwt.verify(userToken, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+        if (err) {
+          return res.status(401).send({ message: "Unauthorized access" });
+        }
+        req.decoded = decoded;
+        next();
+      });
+    };
+
     // Clear token on logout
     app.get("/logout", (req, res) => {
       try {
         res.clearCookie("token", { ...CookieOptions, maxAge: 0 });
-        console.log("Token cleared from cookies");
         res.status(200).send({ success: true });
-        console.log("Logout successful");
       } catch (error) {
-        console.error("Logout error:", error);
         res.status(500).send({ success: false, error: "Logout failed" });
       }
     });
+
+    //register
+    app.post("/register", async (req, res) => {
+      const { name, pin, mobileNumber, email, role } = req.body;
+
+      // Hash the PIN
+      const saltRounds = 10;
+      const hashedPin = await bcrypt.hash(pin, saltRounds);
+
+      // Create the user object
+      const newUser = {
+        name,
+        email,
+        mobileNumber,
+        pinHash: hashedPin,
+        role: role,
+        status: "pending",
+        balance: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      try {
+        // Insert the new user into the database
+        const result = await allUsers.insertOne(newUser);
+        res.status(201).send({ message: "User registered successfully" });
+      } catch (error) {
+        res.status(500).send({ message: "Error registering user", error });
+      }
+    });
+
+    // get email for login
+    app.post('/get-email', async (req, res) => {
+      const { mobileNumber } = req.body;
+    
+      try {
+        const user = await allUsers.findOne({ mobileNumber });
+        if (user) {
+          return res.status(200).json({ email: user.email });
+        } else {
+          return res.status(404).json({ error: 'User not found' });
+        }
+      } catch (error) {
+        return res.status(500).json({ error: 'Server error' });
+      }
+    });
+
+    // user info extract
+    app.get('/users/:email', async (req, res) => {
+      const { email } = req.params;
+    
+      try {
+        const user = await allUsers.findOne({ email });
+        if (user) {
+          return res.status(200).json(user);
+        } else {
+          return res.status(404).json({ error: 'User not found' });
+        }
+      } catch (error) {
+        return res.status(500).json({ error: 'Server error' });
+      }
+    });
+
+    // user -> send money
+    app.post('/send-money', verifyToken, async (req, res) => {
+      const { recipientMobileNumber, amount, pin } = req.body;
+      try {
+        const userEmail = req.decoded.email;
+        // Find the sender and recipient
+        const sender = await allUsers.findOne({ email: userEmail });
+        const recipient = await allUsers.findOne({ mobileNumber: recipientMobileNumber });
+    
+        if (!sender) {
+          return res.status(400).send({ message: 'Sender not found' });
+        }
+    
+        if (!recipient) {
+          return res.status(400).send({ message: 'Recipient not found' });
+        }
+    
+        // Verify sender's PIN
+        const isPinValid = await bcrypt.compare(pin, sender.pinHash);
+
+        if (!isPinValid) {
+          return res.status(400).send({ message: 'Invalid PIN' });
+        }
+    
+        // Calculate the transaction fee
+        let fee = 0;
+        if (amount > 100) {
+          fee = 5;
+        }
+    
+        const totalAmount = parseInt(+amount+ +fee);
+
+        // Check if the sender has enough balance
+        if (sender.balance < totalAmount) {
+          return res.status(400).send({ message: 'Insufficient balance' });
+        }
+
+    
+        // Update balances and record the transaction
+        try {
+          // Deduct amount from sender's balance
+          const userBalance = await allUsers.updateOne(
+            { _id: new Object(sender._id) },
+            { $inc: { balance: -totalAmount } }
+          );
+    
+          // Add amount to recipient's balance
+          const receiverBalance = await allUsers.updateOne(
+            { _id: new Object(recipient._id) },
+            { $inc: { balance: parseInt(amount) } }
+          );
+
+    
+          // Record the transaction
+          const transaction = {
+            type: 'sendMoney',
+            amount,
+            fee,
+            fromUser: sender._id,
+            toUser: recipient._id,
+            timestamp: new Date()
+          };
+    
+          const result = await transactions.insertOne(transaction);
+
+          console.log(result, userBalance, receiverBalance)
+    
+          if (result.acknowledged) {
+            res.send({ message: 'Money sent successfully' });
+          } else {
+            res.status(500).send({ message: 'Error recording transaction' });
+          }
+        } catch (error) {
+          res.status(500).send({ message: 'Error updating balances', error });
+        }
+      } catch (error) {
+        res.status(500).send({ message: 'Error sending money', error });
+      }
+    });
+    
 
     // register as employee
     app.post("/register-employee", async (req, res) => {
@@ -174,25 +307,7 @@ async function run() {
       }
     });
 
-    // check user role
-    app.get("/users/:email", async (req, res) => {
-      const email = req.params.email; // Extract email from request parameters
-      try {
-        const query = { email: email };
-        const user = await userCollection.findOne(query);
-        let role, companyName, companyLogo;
-        if (user) {
-          role = user.role;
-          companyName = user.companyName;
-          companyLogo = user.companyLogo;
-        }
-        res.send({ role, companyName, companyLogo });
-      } catch (error) {
-        console.error("Error fetching user data:", error);
-        res.status(500).send({ error: "Internal server error" });
-      }
-    });
-    
+
     // payment intent
     app.post("/create-payment-intent", async (req, res) => {
       const { price } = req.body;
@@ -305,7 +420,7 @@ async function run() {
     app.patch("/assets/:id", async (req, res) => {
       const id = req.params.id;
       const updateData = req.body;
-      console.log()
+      console.log();
       try {
         const result = await assetsCollection.updateOne(
           { _id: new ObjectId(id) },
@@ -501,17 +616,21 @@ async function run() {
 
     // Page: Add an Employee Page (Only for HR Manager)
     // part 1: Fetch unaffiliated employees
-    app.get("/unaffiliated-employees", async (req, res) => {
-      try {
-        const unaffiliatedEmployees = await userCollection
-          .find({ $or: [{ companyName: null }, { companyName: "" }] })
-          .toArray();
-        res.status(200).json(unaffiliatedEmployees);
-      } catch (error) {
-        console.error("Error fetching unaffiliated employees:", error);
-        res.status(500).json({ error: "Internal server error" });
+    app.get(
+      "/unaffiliated-employees",
+      verifyToken,
+      async (req, res) => {
+        try {
+          const unaffiliatedEmployees = await userCollection
+            .find({ $or: [{ companyName: null }, { companyName: "" }] })
+            .toArray();
+          res.status(200).json(unaffiliatedEmployees);
+        } catch (error) {
+          console.error("Error fetching unaffiliated employees:", error);
+          res.status(500).json({ error: "Internal server error" });
+        }
       }
-    });
+    );
 
     // add multiple people to the team
     app.put("/add-to-team", async (req, res) => {
@@ -582,31 +701,39 @@ async function run() {
     app.get("/requests/:email", async (req, res) => {
       try {
         const userEmail = req.params.email;
-    
+
         // Find HR's information to get companyName
         const user = await userCollection.findOne({ email: userEmail });
         if (!user) {
           return res.status(404).json({ error: "User not found" });
         }
-    
+
         const companyName = user.companyName;
-    
+
         // Fetch requests matching the companyName and include requester and asset details
-        const requests = await assetRequestsCollection.find({ companyName }).toArray();
-    
-        const detailedRequests = await Promise.all(requests.map(async (request) => {
-          const userDetail = await userCollection.findOne({ _id: new ObjectId(request.userId) });
-          const assetDetail = await assetsCollection.findOne({ _id: new ObjectId(request.assetId) });
-    
-          return {
-            ...request,
-            requesterName: userDetail ? userDetail.fullName : "Unknown User",
-            requesterEmail: userDetail ? userDetail.email : "Unknown Email",
-            assetName: assetDetail ? assetDetail.assetName : "Unknown Asset",
-            assetType: assetDetail ? assetDetail.assetType : "Unknown Type",
-          };
-        }));
-    
+        const requests = await assetRequestsCollection
+          .find({ companyName })
+          .toArray();
+
+        const detailedRequests = await Promise.all(
+          requests.map(async (request) => {
+            const userDetail = await userCollection.findOne({
+              _id: new ObjectId(request.userId),
+            });
+            const assetDetail = await assetsCollection.findOne({
+              _id: new ObjectId(request.assetId),
+            });
+
+            return {
+              ...request,
+              requesterName: userDetail ? userDetail.fullName : "Unknown User",
+              requesterEmail: userDetail ? userDetail.email : "Unknown Email",
+              assetName: assetDetail ? assetDetail.assetName : "Unknown Asset",
+              assetType: assetDetail ? assetDetail.assetType : "Unknown Type",
+            };
+          })
+        );
+
         res.status(200).json(detailedRequests);
       } catch (error) {
         console.error("Error fetching requests:", error);
@@ -618,7 +745,6 @@ async function run() {
     app.post("/approve-request", async (req, res) => {
       const { requestId } = req.body;
       try {
-        
         // Find the request to get the asset details
         const request = await assetRequestsCollection.findOne({
           _id: new ObjectId(requestId),
@@ -644,7 +770,6 @@ async function run() {
         await Promise.all([updateRequest, asset, updateAsset]);
 
         res.status(200).json({ message: "Asset approved successfully" });
-
       } catch (error) {
         console.error("Error approving request:", error);
         res.status(500).json({ error: "Internal server error" });
@@ -672,50 +797,55 @@ async function run() {
 
     // update profile
 
-    app.put('/updateProfile/:email', async (req, res) => {
+    app.put("/updateProfile/:email", async (req, res) => {
       const { fullName, photoURL, phoneNumber } = req.body;
       const email = req.params.email;
       console.log(email);
-    
+
       try {
         const user = await userCollection.findOne({ email: email });
         console.log(user);
-    
+
         if (!user) {
-          return res.status(404).json({ message: 'User not found' });
+          return res.status(404).json({ message: "User not found" });
         }
-    
+
         // Check if the new values are different from the current values
         const isFullNameChanged = fullName && fullName !== user.fullName;
         const isPhotoURLChanged = photoURL && photoURL !== user.photoURL;
-        const isPhoneNumberChanged = phoneNumber && phoneNumber !== user.phoneNumber;
-    
+        const isPhoneNumberChanged =
+          phoneNumber && phoneNumber !== user.phoneNumber;
+
         // If no changes, return success without updating
         if (!isFullNameChanged && !isPhotoURLChanged && !isPhoneNumberChanged) {
-          return res.status(200).json({ message: 'No changes detected, profile is already up to date', user });
+          return res
+            .status(200)
+            .json({
+              message: "No changes detected, profile is already up to date",
+              user,
+            });
         }
-    
+
         const updateFields = {};
         if (isFullNameChanged) updateFields.fullName = fullName;
         if (isPhotoURLChanged) updateFields.photoURL = photoURL;
         if (isPhoneNumberChanged) updateFields.phoneNumber = phoneNumber;
-    
+
         const updateResult = await userCollection.updateOne(
           { email: email },
           { $set: updateFields }
         );
         console.log(updateResult);
-    
+
         res.status(200).json({
-          message: 'Profile updated successfully',
-          user: { ...user, ...updateFields }
+          message: "Profile updated successfully",
+          user: { ...user, ...updateFields },
         });
       } catch (error) {
         console.error(error);
-        res.status(500).json({ message: 'Internal server error' });
+        res.status(500).json({ message: "Internal server error" });
       }
-    });        
-
+    });
   } finally {
   }
 }
