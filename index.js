@@ -275,7 +275,8 @@ async function run() {
         const request = {
           userId: user._id,
           agentId: agent._id,
-          amount,
+          type: "Cash Out",
+          amount: parseInt(amount),
           status: "pending",
           timestamp: new Date(),
         };
@@ -333,6 +334,7 @@ async function run() {
         const request = {
           userId: user._id,
           agentId: agent._id,
+          type: "Cash In",
           amount: parseInt(amount),
           status: "pending",
           timestamp: new Date(),
@@ -352,7 +354,121 @@ async function run() {
       }
     });
 
-    // Backend API Endpoint to fetch all users
+    // agent --> request retrive
+
+    app.get('/requests', verifyToken, async (req, res) => {
+      try {
+        const requestsList = await requests.find().toArray();
+        res.send(requestsList);
+      } catch (error) {
+        res.status(500).send({ message: 'Error fetching requests', error });
+      }
+    });
+
+    // agent --> transaction management
+    app.post('/manage-transaction', verifyToken, async (req, res) => {
+      const { requestId, action } = req.body; // action can be "approve" or "deny"
+    
+      try {
+        const request = await requests.findOne({ _id: new ObjectId(requestId) });
+    
+        if (!request) {
+          return res.status(404).send({ message: 'Request not found' });
+        }
+    
+        if (request.status !== 'pending') {
+          return res.status(400).send({ message: 'Request has already been processed' });
+        }
+
+    
+        // Find the user and agent
+        const user = await allUsers.findOne({ _id: new ObjectId(request.userId) });
+        const agent = await allUsers.findOne({ _id: new ObjectId(request.agentId) });
+
+    
+        if (!user || !agent) {
+          return res.status(404).send({ message: 'User or agent not found' });
+        }
+
+    
+        if (action === 'approve') {
+          if (request.type === 'Cash In') {
+            // Check if the agent has enough balance for the cash-in
+
+            if (agent.balance < request.amount) {
+              return res.status(400).send({ message: 'Insufficient balance in agent account' });
+            }
+
+    
+            // Update balances
+            await allUsers.updateOne(
+              { _id: agent._id },
+              { $inc: { balance: -request.amount } }
+            );
+    
+            await allUsers.updateOne(
+              { _id: user._id },
+              { $inc: { balance: request.amount } }
+            );
+          } else if (request.type === 'Cash Out') {
+          
+            // Update balances
+            await allUsers.updateOne(
+              { _id: new Object(user._id) },
+              { $inc: { balance: -request.amount } }
+            );
+    
+            await allUsers.updateOne(
+              { _id: new Object(agent._id) },
+              { $inc: { balance: +request.amount } }
+            );
+          } else {
+            return res.status(400).send({ message: 'Invalid transaction type' });
+          }
+    
+          // Record the transaction
+          const transaction = {
+            type: request.type,
+            amount: request.amount,
+            fromUser: request.type === 'cashIn' ? agent._id : user._id,
+            toUser: request.type === 'cashIn' ? user._id : agent._id,
+            timestamp: new Date()
+          };
+    
+          const result = await transactions.insertOne(transaction);
+    
+          if (!result.acknowledged) {
+            throw new Error('Failed to record transaction');
+          }
+    
+          // Update request status
+          await requests.updateOne(
+            { _id: new ObjectId(requestId) },
+            { $set: { status: 'approved' } }
+          );
+    
+          res.send({ message: 'Transaction approved and completed successfully' });
+    
+        } else if (action === 'deny') {
+          // Update request status
+          await requests.updateOne(
+            { _id: new ObjectId(requestId) },
+            { $set: { status: 'denied' } }
+          );
+    
+          res.send({ message: 'Transaction denied successfully' });
+        } else {
+          res.status(400).send({ message: 'Invalid action' });
+        }
+      } catch (error) {
+        res.status(500).send({ message: 'Error managing transaction', error });
+      }
+    });
+    
+    
+    
+
+    // Fetch all users
     app.get("/all-users", verifyToken, async (req, res) => {
       try {
         const allUsersInfo = await allUsers.find({}).toArray();
@@ -370,7 +486,7 @@ async function run() {
       }
     });
 
-    // Backend API Endpoint to fetch transaction history
+    // Transaction history
     app.get("/transaction-history", verifyToken, async (req, res) => {
       try {
         const userEmail = req.decoded.email;
