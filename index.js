@@ -43,9 +43,7 @@ async function run() {
   try {
     const allUsers = client.db("mfsDB").collection("allUsers");
     const transactions = client.db("mfsDB").collection("transactions");
-    const assetRequestsCollection = client
-      .db("assetMartDB")
-      .collection("assetRequests");
+    const requests = client.db("mfsDB").collection("requests");
 
     // jwt generate
     app.post("/jwt", async (req, res) => {
@@ -74,7 +72,7 @@ async function run() {
       const userToken = req.headers.authorization.split(" ")[1];
       jwt.verify(userToken, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
         if (err) {
-          return res.status(401).send({ message: "Unauthorized access" });
+          return res.status(401).send({ message: "Unauthorized Access" });
         }
         req.decoded = decoded;
         next();
@@ -122,75 +120,76 @@ async function run() {
     });
 
     // get email for login
-    app.post('/get-email', async (req, res) => {
+    app.post("/get-email", async (req, res) => {
       const { mobileNumber } = req.body;
-    
+
       try {
         const user = await allUsers.findOne({ mobileNumber });
         if (user) {
           return res.status(200).json({ email: user.email });
         } else {
-          return res.status(404).json({ error: 'User not found' });
+          return res.status(404).json({ error: "User not found" });
         }
       } catch (error) {
-        return res.status(500).json({ error: 'Server error' });
+        return res.status(500).json({ error: "Server error" });
       }
     });
 
     // user info extract
-    app.get('/users/:email', async (req, res) => {
+    app.get("/users/:email", async (req, res) => {
       const { email } = req.params;
-    
+
       try {
         const user = await allUsers.findOne({ email });
         if (user) {
           return res.status(200).json(user);
         } else {
-          return res.status(404).json({ error: 'User not found' });
+          return res.status(404).json({ error: "User not found" });
         }
       } catch (error) {
-        return res.status(500).json({ error: 'Server error' });
+        return res.status(500).json({ error: "Server error" });
       }
     });
 
     // user -> send money
-    app.post('/send-money', verifyToken, async (req, res) => {
+    app.post("/send-money", verifyToken, async (req, res) => {
       const { recipientMobileNumber, amount, pin } = req.body;
       try {
         const userEmail = req.decoded.email;
         // Find the sender and recipient
         const sender = await allUsers.findOne({ email: userEmail });
-        const recipient = await allUsers.findOne({ mobileNumber: recipientMobileNumber });
-    
+        const recipient = await allUsers.findOne({
+          mobileNumber: recipientMobileNumber,
+        });
+
         if (!sender) {
-          return res.status(400).send({ message: 'Sender not found' });
+          return res.status(400).send({ message: "Sender not found" });
         }
-    
+
         if (!recipient) {
-          return res.status(400).send({ message: 'Recipient not found' });
+          return res.status(400).send({ message: "Recipient not found" });
         }
-    
+
         // Verify sender's PIN
         const isPinValid = await bcrypt.compare(pin, sender.pinHash);
 
         if (!isPinValid) {
-          return res.status(400).send({ message: 'Invalid PIN' });
+          return res.status(400).send({ message: "Invalid PIN" });
         }
-    
+
         // Calculate the transaction fee
         let fee = 0;
         if (amount > 100) {
           fee = 5;
         }
-    
-        const totalAmount = parseInt(+amount+ +fee);
+
+        const totalAmount = parseInt(+amount + +fee);
 
         // Check if the sender has enough balance
         if (sender.balance < totalAmount) {
-          return res.status(400).send({ message: 'Insufficient balance' });
+          return res.status(400).send({ message: "Insufficient balance" });
         }
 
-    
         // Update balances and record the transaction
         try {
           // Deduct amount from sender's balance
@@ -198,41 +197,164 @@ async function run() {
             { _id: new Object(sender._id) },
             { $inc: { balance: -totalAmount } }
           );
-    
+
           // Add amount to recipient's balance
           const receiverBalance = await allUsers.updateOne(
             { _id: new Object(recipient._id) },
             { $inc: { balance: parseInt(amount) } }
           );
 
-    
           // Record the transaction
           const transaction = {
-            type: 'sendMoney',
+            type: "sendMoney",
             amount,
             fee,
             fromUser: sender._id,
             toUser: recipient._id,
-            timestamp: new Date()
+            timestamp: new Date(),
           };
-    
+
           const result = await transactions.insertOne(transaction);
 
-          console.log(result, userBalance, receiverBalance)
-    
+          console.log(result, userBalance, receiverBalance);
+
           if (result.acknowledged) {
-            res.send({ message: 'Money sent successfully' });
+            res.send({ message: "Money sent successfully" });
           } else {
-            res.status(500).send({ message: 'Error recording transaction' });
+            res.status(500).send({ message: "Error recording transaction" });
           }
         } catch (error) {
-          res.status(500).send({ message: 'Error updating balances', error });
+          res.status(500).send({ message: "Error updating balances", error });
         }
       } catch (error) {
-        res.status(500).send({ message: 'Error sending money', error });
+        res.status(500).send({ message: "Error sending money", error });
       }
     });
-    
+
+    // USER -> Cash Out Request via Agent
+    app.post("/cash-out", verifyToken, async (req, res) => {
+      const { agentMobileNumber, amount, pin } = req.body;
+
+      // Validate inputs
+      if (!agentMobileNumber || !amount || !pin) {
+        return res
+          .status(400)
+          .send({
+            message: "Agent mobile number, amount, and PIN are required",
+          });
+      }
+
+      try {
+        const userEmail = req.decoded.email;
+
+        // Find the user and agent
+        const user = await allUsers.findOne({ email: userEmail });
+        const agent = await allUsers.findOne({
+          mobileNumber: agentMobileNumber,
+          role: "agent",
+        });
+
+        if (!user) {
+          return res.status(400).send({ message: "User not found" });
+        }
+
+        if (!agent) {
+          return res.status(400).send({ message: "Agent not found" });
+        }
+
+        // Verify user's PIN
+        const isPinValid = await bcrypt.compare(pin, user.pinHash);
+        if (!isPinValid) {
+          return res.status(400).send({ message: "Invalid PIN" });
+        }
+
+        // Check if the user has enough balance
+        if (user.balance < amount) {
+          return res.status(400).send({ message: "Insufficient balance" });
+        }
+
+        // Create a cash-out request
+        const request = {
+          userId: user._id,
+          agentId: agent._id,
+          amount,
+          status: "pending",
+          timestamp: new Date(),
+        };
+
+        const result = await requests.insertOne(request);
+
+        if (result.acknowledged) {
+          res.send({ message: "Cash-out request created successfully" });
+        } else {
+          res.status(500).send({ message: "Error creating cash-out request" });
+        }
+      } catch (error) {
+        res
+          .status(500)
+          .send({ message: "Error processing cash-out request", error });
+      }
+    });
+
+    // user --> cash-in request
+    app.post("/cash-in", verifyToken, async (req, res) => {
+      const { agentMobileNumber, amount, pin } = req.body;
+
+      // Validate inputs
+      if (!agentMobileNumber || !amount || !pin) {
+        return res
+          .status(400)
+          .send({
+            message: "Agent mobile number, amount, and PIN are required",
+          });
+      }
+
+      try {
+        const userEmail = req.decoded.email;
+
+        // Find the user and agent
+        const user = await allUsers.findOne({ email: userEmail });
+        const agent = await allUsers.findOne({
+          mobileNumber: agentMobileNumber,
+          role: "agent",
+        });
+
+        if (!user) {
+          return res.status(400).send({ message: "User not found" });
+        }
+
+        if (!agent) {
+          return res.status(400).send({ message: "Agent not found" });
+        }
+
+        // Verify user's PIN
+        const isPinValid = await bcrypt.compare(pin, user.pinHash);
+        if (!isPinValid) {
+          return res.status(400).send({ message: "Invalid PIN" });
+        }
+
+        // Create a cash-in request
+        const request = {
+          userId: user._id,
+          agentId: agent._id,
+          amount: parseInt(amount),
+          status: "pending",
+          timestamp: new Date(),
+        };
+
+        const result = await requests.insertOne(request);
+
+        if (result.acknowledged) {
+          res.send({ message: "Cash-in request created successfully" });
+        } else {
+          res.status(500).send({ message: "Error creating cash-in request" });
+        }
+      } catch (error) {
+        res
+          .status(500)
+          .send({ message: "Error processing cash-in request", error });
+      }
+    });
 
     // register as employee
     app.post("/register-employee", async (req, res) => {
@@ -306,7 +428,6 @@ async function run() {
         res.status(500).json({ error: "Internal server error" });
       }
     });
-
 
     // payment intent
     app.post("/create-payment-intent", async (req, res) => {
@@ -616,21 +737,17 @@ async function run() {
 
     // Page: Add an Employee Page (Only for HR Manager)
     // part 1: Fetch unaffiliated employees
-    app.get(
-      "/unaffiliated-employees",
-      verifyToken,
-      async (req, res) => {
-        try {
-          const unaffiliatedEmployees = await userCollection
-            .find({ $or: [{ companyName: null }, { companyName: "" }] })
-            .toArray();
-          res.status(200).json(unaffiliatedEmployees);
-        } catch (error) {
-          console.error("Error fetching unaffiliated employees:", error);
-          res.status(500).json({ error: "Internal server error" });
-        }
+    app.get("/unaffiliated-employees", verifyToken, async (req, res) => {
+      try {
+        const unaffiliatedEmployees = await userCollection
+          .find({ $or: [{ companyName: null }, { companyName: "" }] })
+          .toArray();
+        res.status(200).json(unaffiliatedEmployees);
+      } catch (error) {
+        console.error("Error fetching unaffiliated employees:", error);
+        res.status(500).json({ error: "Internal server error" });
       }
-    );
+    });
 
     // add multiple people to the team
     app.put("/add-to-team", async (req, res) => {
@@ -818,12 +935,10 @@ async function run() {
 
         // If no changes, return success without updating
         if (!isFullNameChanged && !isPhotoURLChanged && !isPhoneNumberChanged) {
-          return res
-            .status(200)
-            .json({
-              message: "No changes detected, profile is already up to date",
-              user,
-            });
+          return res.status(200).json({
+            message: "No changes detected, profile is already up to date",
+            user,
+          });
         }
 
         const updateFields = {};
