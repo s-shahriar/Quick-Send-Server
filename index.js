@@ -216,7 +216,6 @@ async function run() {
 
           const result = await transactions.insertOne(transaction);
 
-          console.log(result, userBalance, receiverBalance);
 
           if (result.acknowledged) {
             res.send({ message: "Money sent successfully" });
@@ -472,23 +471,24 @@ async function run() {
       }
     });
 
-    // Fetch all users
+    // Fetch all users - transaction management + history
     app.get("/all-users", verifyToken, async (req, res) => {
       try {
         const allUsersInfo = await allUsers.find({}).toArray();
-
+    
         const users = allUsersInfo.map((user) => ({
           _id: user._id,
           name: user.name,
-          // Add any other necessary fields here
+          email: user.email, 
         }));
-
+    
         res.send(users);
       } catch (error) {
         console.error("Error fetching all users:", error);
         res.status(500).send({ message: "Error fetching users" });
       }
     });
+    
 
     // Transaction history
     app.get("/transaction-history", verifyToken, async (req, res) => {
