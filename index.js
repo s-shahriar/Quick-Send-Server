@@ -494,7 +494,6 @@ async function run() {
     app.get("/transaction-history", verifyToken, async (req, res) => {
       try {
         const userEmail = req.decoded.email;
-
         let transactionsList;
 
         if (userEmail === "admin@admin.com") {
