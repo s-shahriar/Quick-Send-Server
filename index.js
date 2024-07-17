@@ -355,118 +355,122 @@ async function run() {
     });
 
     // agent --> request retrive
-
-    app.get('/requests', verifyToken, async (req, res) => {
+    app.get("/requests", verifyToken, async (req, res) => {
       try {
         const requestsList = await requests.find().toArray();
         res.send(requestsList);
       } catch (error) {
-        res.status(500).send({ message: 'Error fetching requests', error });
+        res.status(500).send({ message: "Error fetching requests", error });
       }
     });
 
     // agent --> transaction management
-    app.post('/manage-transaction', verifyToken, async (req, res) => {
+    app.post("/manage-transaction", verifyToken, async (req, res) => {
       const { requestId, action } = req.body; // action can be "approve" or "deny"
-    
+
       try {
-        const request = await requests.findOne({ _id: new ObjectId(requestId) });
-    
+        const request = await requests.findOne({
+          _id: new ObjectId(requestId),
+        });
+
         if (!request) {
-          return res.status(404).send({ message: 'Request not found' });
-        }
-    
-        if (request.status !== 'pending') {
-          return res.status(400).send({ message: 'Request has already been processed' });
+          return res.status(404).send({ message: "Request not found" });
         }
 
-    
+        if (request.status !== "pending") {
+          return res
+            .status(400)
+            .send({ message: "Request has already been processed" });
+        }
+
         // Find the user and agent
-        const user = await allUsers.findOne({ _id: new ObjectId(request.userId) });
-        const agent = await allUsers.findOne({ _id: new ObjectId(request.agentId) });
+        const user = await allUsers.findOne({
+          _id: new ObjectId(request.userId),
+        });
+        const agent = await allUsers.findOne({
+          _id: new ObjectId(request.agentId),
+        });
 
-    
         if (!user || !agent) {
-          return res.status(404).send({ message: 'User or agent not found' });
+          return res.status(404).send({ message: "User or agent not found" });
         }
 
-    
-        if (action === 'approve') {
-          if (request.type === 'Cash In') {
+        if (action === "approve") {
+          if (request.type === "Cash In") {
             // Check if the agent has enough balance for the cash-in
 
             if (agent.balance < request.amount) {
-              return res.status(400).send({ message: 'Insufficient balance in agent account' });
+              return res
+                .status(400)
+                .send({ message: "Insufficient balance in agent account" });
             }
 
-    
             // Update balances
             await allUsers.updateOne(
               { _id: agent._id },
               { $inc: { balance: -request.amount } }
             );
-    
+
             await allUsers.updateOne(
               { _id: user._id },
               { $inc: { balance: request.amount } }
             );
-          } else if (request.type === 'Cash Out') {
-          
+          } else if (request.type === "Cash Out") {
             // Update balances
             await allUsers.updateOne(
               { _id: new Object(user._id) },
               { $inc: { balance: -request.amount } }
             );
-    
+
             await allUsers.updateOne(
               { _id: new Object(agent._id) },
               { $inc: { balance: +request.amount } }
             );
           } else {
-            return res.status(400).send({ message: 'Invalid transaction type' });
+            return res
+              .status(400)
+              .send({ message: "Invalid transaction type" });
           }
-    
+
           // Record the transaction
           const transaction = {
             type: request.type,
             amount: request.amount,
-            fromUser: request.type === 'cashIn' ? agent._id : user._id,
-            toUser: request.type === 'cashIn' ? user._id : agent._id,
-            timestamp: new Date()
+            fromUser: request.type === "cashIn" ? agent._id : user._id,
+            toUser: request.type === "cashIn" ? user._id : agent._id,
+            timestamp: new Date(),
           };
-    
+
           const result = await transactions.insertOne(transaction);
-    
+
           if (!result.acknowledged) {
-            throw new Error('Failed to record transaction');
+            throw new Error("Failed to record transaction");
           }
-    
+
           // Update request status
           await requests.updateOne(
             { _id: new ObjectId(requestId) },
-            { $set: { status: 'approved' } }
+            { $set: { status: "approved" } }
           );
-    
-          res.send({ message: 'Transaction approved and completed successfully' });
-    
-        } else if (action === 'deny') {
+
+          res.send({
+            message: "Transaction approved and completed successfully",
+          });
+        } else if (action === "deny") {
           // Update request status
           await requests.updateOne(
             { _id: new ObjectId(requestId) },
-            { $set: { status: 'denied' } }
+            { $set: { status: "denied" } }
           );
-    
-          res.send({ message: 'Transaction denied successfully' });
+
+          res.send({ message: "Transaction denied successfully" });
         } else {
-          res.status(400).send({ message: 'Invalid action' });
+          res.status(400).send({ message: "Invalid action" });
         }
       } catch (error) {
-        res.status(500).send({ message: 'Error managing transaction', error });
+        res.status(500).send({ message: "Error managing transaction", error });
       }
     });
-    
-    
-    
 
     // Fetch all users
     app.get("/all-users", verifyToken, async (req, res) => {
@@ -498,7 +502,7 @@ async function run() {
             .find({})
             .sort({ timestamp: -1 })
             .limit(100)
-            .toArray(); 
+            .toArray();
         } else {
           const user = await allUsers.findOne({ email: userEmail });
 
@@ -523,6 +527,57 @@ async function run() {
           .send({ message: "Error fetching transaction history", error });
       }
     });
+
+    // Admin --> Get user list
+    app.get("/users", verifyToken, async (req, res) => {
+      try {
+        const users = await allUsers.find().toArray();
+        res.send(users);
+      } catch (error) {
+        res.status(500).send({ message: "Error fetching users", error });
+      }
+    });
+
+    // Admin --> manage user
+
+    app.patch('/manage-user', verifyToken, async (req, res) => {
+      const { userId, action } = req.body;
+    
+      try {
+        const user = await allUsers.findOne({ _id: new ObjectId(userId) });
+    
+        if (!user) {
+          return res.status(404).send({ message: 'User not found' });
+        }
+    
+        let updateFields = {};
+        let incrementFields = {};
+    
+        if (action === 'activate' && user.status === 'pending') {
+          updateFields.status = 'approved';
+          if (!user.bonusGiven) {
+            updateFields.bonusGiven = true;
+            incrementFields.balance = user.role === 'user' ? 40 : (user.role === 'agent' ? 10000 : 0);
+          }
+        } else if (action === 'block' && user.status !== 'blocked') {
+          updateFields.status = 'blocked';
+        } else if (action === 'activate' && user.status === 'blocked') {
+          updateFields.status = 'approved';
+        } else {
+          return res.status(400).send({ message: 'Invalid action or user is already active' });
+        }
+    
+        await allUsers.updateOne(
+          { _id: user._id },
+          { $set: { ...updateFields, updatedAt: new Date() }, $inc: incrementFields }
+        );
+    
+        res.send({ message: `User ${action === 'activate' ? 'activated' : 'blocked'} successfully` });
+      } catch (error) {
+        res.status(500).send({ message: 'Error managing user', error });
+      }
+    });
+    
   } finally {
   }
 }
